@@ -19,8 +19,8 @@ Pytree = Any
 class OptimizerConfig:
     learning_rate: float = 1.5e-4
     scheduler: Literal["linear", "none"] = "linear"
-    adam_beta1: float = 0.0
-    adam_beta2: float = 0.9
+    adam_beta1: float = 0.5
+    adam_beta2: float = 0.999
 
 
 @dataclasses.dataclass
@@ -167,25 +167,22 @@ class TrainState:
 
         histogram_sample_size = 50
 
-        Z_dot_Z_hat = jnp.einsum(
-            "ni,ni->n", Z[histogram_sample_size:], Z_hat[histogram_sample_size:]
-        )
         X_minus_X_hat = X[histogram_sample_size:] - X_hat[histogram_sample_size:]
         return score, (
             f_state,
             g_state,
             fifteen.experiments.TensorboardLogData(
                 scalars={
-                    "expansive_encode": a,
-                    "compressive_decode": b,
-                    "contrastive_contractive": c,
+                    "1_expansive_encode": a,
+                    "2_compressive_decode": b,
+                    "3_contrastive_contractive": c,
+                    "1_minus_2": a - b,
                     "mse": jnp.mean(X_minus_X_hat ** 2),
                 },
                 histograms={
                     "X": X[histogram_sample_size:],
                     "X_hat": X_hat[histogram_sample_size:],
                     "X_minus_X_hat": X_minus_X_hat,
-                    "Z_dot_Z_hat": Z_dot_Z_hat,
                 },
             ),
         )
