@@ -20,13 +20,6 @@ class MnistStruct(jax_dataclasses.EnforcedAnnotationsMixin):
     ]
     label: Annotated[jnp.ndarray, (10,), jnp.integer]
 
-    def normalize(self) -> "MnistStruct":
-        with jax_dataclasses.copy_and_mutate(self) as out:
-            out.image = (self.image - onp.mean(self.image)) / onp.std(
-                self.image
-            ) * 0.5 + 0.5
-        return out
-
 
 def make_one_hot(labels: onp.ndarray, num_classes: int) -> onp.ndarray:
     """Convert integer labels to one-hot. Supports arbitrary batch axes."""
@@ -42,31 +35,34 @@ def load_mnist_dataset(split: Literal["train", "test"]) -> "MnistStruct":
     d.set_format("numpy")
 
     images = []
-    for im in d[split]["image"]:
+    for im in d[split]["image"]:  # type: ignore
         images.append(
-            onp.array(PIL.Image.fromarray(im).resize((32, 32), PIL.Image.BILINEAR))[
-                :, :, None
-            ]
+            onp.array(
+                PIL.Image.fromarray(im.astype(onp.uint8)).resize(
+                    (32, 32), PIL.Image.BILINEAR
+                )
+            )
         )
 
     return MnistStruct(
-        image=onp.array(images, dtype=onp.float32),
-        label=make_one_hot(d[split]["label"], num_classes=10),
-    ).normalize()
+        image=2.0 * (onp.array(images, dtype=onp.float32)[:, :, :, None] / 255.0 - 0.5),
+        label=make_one_hot(d[split]["label"], num_classes=10),  # type: ignore
+    )
 
 
 class MnistDataset:
     """MNIST as a torch-style dataset."""
 
     def __init__(self, split: Literal["train", "test"]):
-        self.dataset = load_mnist_dataset(split)
+        self.data = load_mnist_dataset(split)
 
     def __getitem__(self, index: int) -> MnistStruct:
         # import time
         # import random
         # time.sleep(random.random()/100.0)
-        return jax.tree_map(lambda x: x[index], self.dataset)
+        return jax.tree_map(lambda x: x[index], self.data)
 
     def __len__(self) -> int:
-        (length,) = self.dataset.get_batch_axes()
+        (length,) = self.data.get_batch_axes()
         return length
+        #  return 64 # TODO: remove

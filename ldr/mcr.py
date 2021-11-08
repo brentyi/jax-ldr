@@ -13,19 +13,19 @@ def logdet_hermitian(A: jnp.ndarray) -> jnp.ndarray:
     return 2 * jnp.sum(jnp.log(jnp.diag(jnp.linalg.cholesky(A))))
 
 
-def coding_rate(Z: jnp.ndarray, epsilon: float) -> jnp.ndarray:
+def coding_rate(Z: jnp.ndarray, epsilon_sq: float) -> jnp.ndarray:
     """Compute the rate distortion function.
 
     This can be interpreted as a ball packing problem: given the volume defined by some
-    set of vectors Z, how many balls of radius epsilon fit inside? The log of this
+    set of vectors Z, how many balls of radius epsilon_sq fit inside? The log of this
     number will be proportional to the bit count `R`."""
     ZZ_T = jnp.einsum("ni,nj->nij", Z, Z)
-    return coding_rate_from_autocorrelations(ZZ_T, epsilon=epsilon, mask=None)
+    return coding_rate_from_autocorrelations(ZZ_T, epsilon_sq=epsilon_sq, mask=None)
 
 
 def coding_rate_from_autocorrelations(
     ZZ_T: jnp.ndarray,
-    epsilon: float,
+    epsilon_sq: float,
     mask: Optional[jnp.ndarray] = None,  # Pi in LDR paper.
 ) -> jnp.ndarray:
     """Compute the rate distortion function. Same as `coding_rate()`, but operates on a
@@ -39,7 +39,7 @@ def coding_rate_from_autocorrelations(
         N = jnp.sum(mask)
         mask = mask[:, None, None]  # For broadcasting.
 
-    alpha = D / (N * epsilon ** 2)
+    alpha = D / (N * epsilon_sq)
     cov = jnp.eye(D) + alpha * jnp.sum(ZZ_T, axis=0, where=mask)
     assert cov.shape == (D, D)
 
@@ -49,7 +49,7 @@ def coding_rate_from_autocorrelations(
 def coding_rate_distance_from_autocorrelations(
     ZZ_T_0: jnp.ndarray,
     ZZ_T_1: jnp.ndarray,
-    epsilon: float,
+    epsilon_sq: float,
     mask_0: Optional[jnp.ndarray] = None,
     mask_1: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
@@ -66,16 +66,16 @@ def coding_rate_distance_from_autocorrelations(
     else:
         mask_union = None
 
-    return coding_rate_from_autocorrelations(ZZ_T_union, epsilon, mask_union) - 0.5 * (
-        coding_rate_from_autocorrelations(ZZ_T_0, epsilon, mask_0)
-        + coding_rate_from_autocorrelations(ZZ_T_1, epsilon, mask_1)
+    return coding_rate_from_autocorrelations(ZZ_T_union, epsilon_sq, mask_union) - 0.5 * (
+        coding_rate_from_autocorrelations(ZZ_T_0, epsilon_sq, mask_0)
+        + coding_rate_from_autocorrelations(ZZ_T_1, epsilon_sq, mask_1)
     )
 
 
 def multiclass_coding_rate_from_autocorrelations(
     ZZ_T: jnp.ndarray,
     one_hot_labels: jnp.ndarray,
-    epsilon: float,
+    epsilon_sq: float,
 ) -> jnp.ndarray:
     """The difference between the coding rate for the whole volume and the coding rates
     for each subset.
@@ -90,15 +90,16 @@ def multiclass_coding_rate_from_autocorrelations(
     assert D == D_
 
     # Coding rate for the whole minibatch.
-    coding_rate_whole = coding_rate_from_autocorrelations(ZZ_T, epsilon)
+    coding_rate_whole = coding_rate_from_autocorrelations(ZZ_T, epsilon_sq)
 
     # Sum across coding rate for each subset.
-    subsets_terms = jax.vmap(
-        lambda mask: coding_rate_from_autocorrelations(ZZ_T, epsilon, mask)
+    class_ratios = jnp.sum(one_hot_labels, axis=0) / N
+    coding_rate_per_class = jax.vmap(
+        lambda mask: coding_rate_from_autocorrelations(ZZ_T, epsilon_sq, mask)
     )(
         one_hot_labels.T,  # (K, N)
     )
-    assert subsets_terms.shape == (K,)
-    coding_rate_subsets = jnp.sum(subsets_terms)
+    assert coding_rate_per_class.shape == (K,)
+    coding_rate_per_class = jnp.sum(class_ratios * coding_rate_per_class)
 
-    return coding_rate_whole - coding_rate_subsets
+    return (coding_rate_whole - coding_rate_per_class) / 2.0
