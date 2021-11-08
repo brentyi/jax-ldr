@@ -110,6 +110,7 @@ class TrainState:
             flax.core.FrozenDict,
             jnp.ndarray,
             jnp.ndarray,
+            jnp.ndarray,
         ],
     ]:
         """Score computation helper for train time.

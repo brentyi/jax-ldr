@@ -30,7 +30,6 @@ def coding_rate_from_autocorrelations(
 ) -> jnp.ndarray:
     """Compute the rate distortion function. Same as `coding_rate()`, but operates on a
     set of sample autocorrelation matrices (each of which should be PSD and rank 1)."""
-
     N, D, D_ = ZZ_T.shape
     assert D == D_
     assert mask is None or mask.shape == (N,)
@@ -54,7 +53,6 @@ def coding_rate_distance_from_autocorrelations(
     mask_1: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """Compute a coding rate "distance" metric between two sets."""
-
     N1, D, D_ = ZZ_T_0.shape
     N2, D__, D___ = ZZ_T_1.shape
     assert D == D_ == D__ == D___
@@ -66,7 +64,9 @@ def coding_rate_distance_from_autocorrelations(
     else:
         mask_union = None
 
-    return coding_rate_from_autocorrelations(ZZ_T_union, epsilon_sq, mask_union) - 0.5 * (
+    return coding_rate_from_autocorrelations(
+        ZZ_T_union, epsilon_sq, mask_union
+    ) - 0.5 * (
         coding_rate_from_autocorrelations(ZZ_T_0, epsilon_sq, mask_0)
         + coding_rate_from_autocorrelations(ZZ_T_1, epsilon_sq, mask_1)
     )
@@ -82,7 +82,6 @@ def multiclass_coding_rate_from_autocorrelations(
 
     Note that to produce highly incoherent subspaces, we want to perform coding rate
     _reduction_, that is, this quantity should generally be *maximized*."""
-
     # Check shapes.
     N, K = one_hot_labels.shape
     N_, D, D_ = ZZ_T.shape
