@@ -13,13 +13,6 @@ conv_kernel_init = nn.initializers.normal(stddev=0.02)
 batchnorm_scale_init = lambda *a, **kw: 1.0 + conv_kernel_init(*a, **kw)  # type: ignore
 
 
-class MnistModelState(TypedDict):
-    """Type hint for encoder and decoder states."""
-
-    params: flax.core.FrozenDict
-    batch_stats: flax.core.FrozenDict
-
-
 class MnistEncoder(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool) -> jnp.ndarray:  # type: ignore

@@ -18,6 +18,7 @@ from ldr import mnist_data, mnist_training, mnist_viz
 @dataclasses.dataclass
 class Args:
     experiment_identifier: Optional[str]
+    restore_existing_checkpoint: bool = True
     batch_size: int = 2048
     num_epochs: int = 500000
     train_config: mnist_training.TrainConfig = mnist_training.TrainConfig()
@@ -35,7 +36,6 @@ def main(args: Args):
         experiment = fifteen.experiments.Experiment(
             identifier=args.experiment_identifier
         )
-    experiment.write_metadata("train_config", args.train_config)
 
     test_data = mnist_data.load_mnist_dataset("test")
 
@@ -51,10 +51,15 @@ def main(args: Args):
         seed=args.seed,
     )
 
-    try:
-        train_state = experiment.restore_checkpoint(train_state)
-    except FileNotFoundError:
-        print("No checkpoint found!")
+    if args.restore_existing_checkpoint:
+        try:
+            train_state = experiment.restore_checkpoint(train_state)
+        except FileNotFoundError:
+            print("No checkpoint found!")
+    else:
+        experiment.clear()
+
+    experiment.write_metadata("train_config", args.train_config)
 
     # Run sequential minimax game.
     for epoch in range(args.num_epochs):

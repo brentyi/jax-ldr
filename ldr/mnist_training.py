@@ -10,7 +10,7 @@ import optax
 from jax import numpy as jnp
 from typing_extensions import Literal
 
-from . import ldr, mnist_data, mnist_networks, protocols
+from . import ldr, mnist_data, mnist_networks
 
 Pytree = Any
 
@@ -40,7 +40,7 @@ class Optimizer:
             learning_rate=optax.linear_schedule(
                 init_value=config.learning_rate,
                 end_value=0.0,
-                transition_steps=45000,
+                transition_steps=4500,
             )
             if config.scheduler == "linear"
             else config.learning_rate,
@@ -108,9 +108,7 @@ class TrainState:
         Tuple[
             flax.core.FrozenDict,
             flax.core.FrozenDict,
-            jnp.ndarray,
-            jnp.ndarray,
-            jnp.ndarray,
+            fifteen.experiments.TensorboardLogData,
         ],
     ]:
         """Score computation helper for train time.
@@ -133,6 +131,7 @@ class TrainState:
             g_params = self.g_state["params"]
 
         # We'll be updating our states with batch statistics.
+        # TODO: figure out a cleaner way to do this!
         f_state = self.f_state
         g_state = self.g_state
 
@@ -145,7 +144,7 @@ class TrainState:
         )
         X_hat, g_state = self.g_model.apply(
             {"params": g_params, "batch_stats": g_state["batch_stats"]},
-            Z,
+            jax.lax.stop_gradient(Z),
             train=True,
             mutable=["batch_stats"],
         )
@@ -156,17 +155,40 @@ class TrainState:
             mutable=["batch_stats"],
         )
         assert Z.shape == Z_hat.shape == (minibatch.get_batch_axes()[0], 128)
-        score = ldr.ldr_score(
+        a, b, c = ldr.ldr_score_terms(
             Z=Z,
             Z_hat=Z_hat,
             one_hot_labels=minibatch.label,
             epsilon_sq=self.config.ldr_epsilon_sq,
         )
+        score = a + b + c
         if negate_score:
             score = -score
 
-        Z_dot_Z_hat = jnp.einsum("ni,ni->n", Z, Z_hat)
-        return score, (f_state, g_state, X, X_hat, Z_dot_Z_hat)
+        histogram_sample_size = 50
+
+        Z_dot_Z_hat = jnp.einsum(
+            "ni,ni->n", Z[histogram_sample_size:], Z_hat[histogram_sample_size:]
+        )
+        X_minus_X_hat = X[histogram_sample_size:] - X_hat[histogram_sample_size:]
+        return score, (
+            f_state,
+            g_state,
+            fifteen.experiments.TensorboardLogData(
+                scalars={
+                    "expansive_encode": a,
+                    "compressive_decode": b,
+                    "contrastive_contractive": c,
+                    "mse": jnp.mean(X_minus_X_hat ** 2),
+                },
+                histograms={
+                    "X": X[histogram_sample_size:],
+                    "X_hat": X_hat[histogram_sample_size:],
+                    "X_minus_X_hat": X_minus_X_hat,
+                    "Z_dot_Z_hat": Z_dot_Z_hat,
+                },
+            ),
+        )
 
     @jax.jit
     def min_step(
@@ -181,9 +203,7 @@ class TrainState:
             (
                 f_state_updated_batch_stats,
                 g_state_updated_batch_stats,
-                _X,
-                _X_hat,
-                _Z_dot_Z_hat,
+                _compute_score_log_data,
             ),
         ), grads = jax.value_and_grad(
             lambda g_params: self._compute_score(
@@ -227,9 +247,7 @@ class TrainState:
             (
                 f_state_updated_batch_stats,
                 g_state_updated_batch_stats,
-                X,
-                X_hat,
-                Z_dot_Z_hat,
+                compute_score_log_data,
             ),
         ), grads = jax.value_and_grad(
             lambda f_params: self._compute_score(
@@ -255,18 +273,12 @@ class TrainState:
             out.steps = self.steps + 1
 
         # For histograms, we don't need to return every single X/X_hat
-        hist_count = min(batch_size, 64)
-        X_minus_X_hat = X - X_hat
-        return out, fifteen.experiments.TensorboardLogData(
-            scalars={
-                "max/global_norm": optax.global_norm(grads),
-                "max/score": score,
-                "max/mse": jnp.linalg.norm(X_minus_X_hat),
-            },
-            histograms={
-                "max/X": X[:hist_count],
-                "max/X_hat": X_hat[:hist_count],
-                "max/X_minus_X_hat": X_minus_X_hat[:hist_count],
-                "max/Z_dot_Z_hat": Z_dot_Z_hat,
-            },
+        return (
+            out,
+            fifteen.experiments.TensorboardLogData(
+                scalars={
+                    "max/global_norm": optax.global_norm(grads),
+                    "max/score": score,
+                }
+            ).extend(compute_score_log_data, prefix="max/compute_score/"),
         )
