@@ -8,6 +8,7 @@ import fifteen
 import jax
 import jax_dataclasses
 import numpy as onp
+import torch.utils.data
 from jax import numpy as jnp
 from tqdm.auto import tqdm
 from typing_extensions import Annotated
@@ -44,7 +45,6 @@ def main(args: Args):
         train_dataset,
         batch_size=args.batch_size,
         num_workers=4,
-        collate_fn=fifteen.data.DataLoader.collate_fn,
     )
     train_state = mnist_training.TrainState.setup(
         config=args.train_config,
@@ -90,13 +90,8 @@ def main(args: Args):
                     step=train_state.steps,
                 )
 
-            # Min step. (~updating disciminator in a GAN)
-            train_state, log_data = train_state.min_step(minibatch)
-
-            # Max step. (~updating generator in a GAN)
-            if (train_state.steps - args.n_dis + 1) % args.n_dis == 0:
-                train_state, min_log_data = train_state.max_step(minibatch)
-                log_data = log_data.extend(min_log_data)
+            # Run minimax step.
+            train_state, log_data = train_state.min_then_max_step(minibatch)
 
             # Log to Tensorboard.
             experiment.log(

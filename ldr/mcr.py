@@ -17,7 +17,7 @@ def coding_rate(Z: jnp.ndarray, epsilon_sq: float) -> jnp.ndarray:
     """Compute the rate distortion function.
 
     This can be interpreted as a ball packing problem: given the volume defined by some
-    set of vectors Z, how many balls of radius epsilon_sq fit inside? The log of this
+    set of vectors Z, how many balls of radius epsilon fit inside? The log of this
     number will be proportional to the bit count `R`."""
     ZZ_T = jnp.einsum("ni,nj->nij", Z, Z)
     return coding_rate_from_autocorrelations(ZZ_T, epsilon_sq=epsilon_sq, mask=None)

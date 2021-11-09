@@ -17,10 +17,10 @@ Pytree = Any
 
 @dataclasses.dataclass
 class OptimizerConfig:
-    learning_rate: float = 1.5e-4
+    learning_rate: float = 1e-4
     scheduler: Literal["linear", "none"] = "linear"
     adam_beta1: float = 0.5
-    adam_beta2: float = 0.999
+    adam_beta2: float = 0.9
 
 
 @dataclasses.dataclass
@@ -102,7 +102,6 @@ class TrainState:
         minibatch: mnist_data.MnistStruct,
         f_params: Optional[flax.core.FrozenDict] = None,
         g_params: Optional[flax.core.FrozenDict] = None,
-        negate_score: bool = False,
     ) -> Tuple[
         jnp.ndarray,
         Tuple[
@@ -119,8 +118,6 @@ class TrainState:
                 but useful for gradients.
             g_params (Optional[flax.core.FrozenDict]): Decoder params override. Optional,
                 but useful for gradients.
-            negate_score (bool): Set to True to negate the score; useful for maximizing
-                instead of minimizing. Optional.
 
         Returns:
             Score,
@@ -155,6 +152,7 @@ class TrainState:
             mutable=["batch_stats"],
         )
         assert Z.shape == Z_hat.shape == (minibatch.get_batch_axes()[0], 128)
+
         a, b, c = ldr.ldr_score_terms(
             Z=Z,
             Z_hat=Z_hat,
@@ -162,11 +160,8 @@ class TrainState:
             epsilon_sq=self.config.ldr_epsilon_sq,
         )
         score = a + b + c
-        if negate_score:
-            score = -score
 
         histogram_sample_size = 50
-
         X_minus_X_hat = X[histogram_sample_size:] - X_hat[histogram_sample_size:]
         return score, (
             f_state,
@@ -187,7 +182,6 @@ class TrainState:
             ),
         )
 
-    @jax.jit
     def min_step(
         self,
         minibatch: mnist_data.MnistStruct,
@@ -203,9 +197,7 @@ class TrainState:
                 _compute_score_log_data,
             ),
         ), grads = jax.value_and_grad(
-            lambda g_params: self._compute_score(
-                minibatch, g_params=g_params, negate_score=False
-            ),
+            lambda g_params: self._compute_score(minibatch, g_params=g_params),
             has_aux=True,
         )(
             self.g_state["params"]
@@ -213,25 +205,22 @@ class TrainState:
         g_params_updates, g_optimizer_state_new = self.g_optimizer.tx.update(
             grads, self.g_optimizer.state, self.g_state["params"]
         )
-        with jax_dataclasses.copy_and_mutate(self) as out:
+        with jax_dataclasses.copy_and_mutate(self, validate=True) as out:
             out.g_optimizer.state = g_optimizer_state_new
-            out.f_state = flax.core.FrozenDict(
-                params=self.f_state["params"],
-                batch_stats=f_state_updated_batch_stats["batch_stats"],
-            )
+            out.f_state = self.f_state.copy(f_state_updated_batch_stats)
             out.g_state = flax.core.FrozenDict(
                 params=optax.apply_updates(self.g_state["params"], g_params_updates),
-                batch_stats=g_state_updated_batch_stats["batch_stats"],
+                **g_state_updated_batch_stats
             )
             out.steps = self.steps + 1
+
         return out, fifteen.experiments.TensorboardLogData(
             scalars={
-                "min/global_norm": optax.global_norm(grads),
-                "min/score": score,
+                "global_norm": optax.global_norm(grads),
+                "score": score,
             }
         )
 
-    @jax.jit
     def max_step(
         self,
         minibatch: mnist_data.MnistStruct,
@@ -247,35 +236,44 @@ class TrainState:
                 compute_score_log_data,
             ),
         ), grads = jax.value_and_grad(
-            lambda f_params: self._compute_score(
-                minibatch, f_params=f_params, negate_score=True
-            ),
+            lambda f_params: self._compute_score(minibatch, f_params=f_params),
             has_aux=True,
         )(
             self.f_state["params"]
         )
+
+        # Flip the gradients to maximize instead of minimize.
+        grads = jax.tree_map(lambda x: -x, grads)
+
         f_params_updates, f_optimizer_state_new = self.f_optimizer.tx.update(
             grads, self.f_optimizer.state, self.f_state["params"]
         )
-        with jax_dataclasses.copy_and_mutate(self) as out:
+        with jax_dataclasses.copy_and_mutate(self, validate=True) as out:
             out.f_optimizer.state = f_optimizer_state_new
             out.f_state = flax.core.FrozenDict(
                 params=optax.apply_updates(self.f_state["params"], f_params_updates),
-                batch_stats=f_state_updated_batch_stats["batch_stats"],
+                **f_state_updated_batch_stats
             )
-            out.g_state = flax.core.FrozenDict(
-                params=self.g_state["params"],
-                batch_stats=g_state_updated_batch_stats["batch_stats"],
-            )
+            out.g_state = self.g_state.copy(g_state_updated_batch_stats)
             out.steps = self.steps + 1
 
-        # For histograms, we don't need to return every single X/X_hat
         return (
             out,
             fifteen.experiments.TensorboardLogData(
                 scalars={
-                    "max/global_norm": optax.global_norm(grads),
-                    "max/score": score,
+                    "global_norm": optax.global_norm(grads),
+                    "score": score,
                 }
-            ).extend(compute_score_log_data, prefix="max/compute_score/"),
+            ).merge(compute_score_log_data.prefix("compute_score/")),
         )
+
+    @jax.jit
+    def min_then_max_step(
+        self,
+        minibatch: mnist_data.MnistStruct,
+    ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
+        """Run a min, then a max step. And JIT the full thing."""
+        train_state = self
+        train_state, log_data0 = train_state.min_step(minibatch)
+        train_state, log_data1 = train_state.max_step(minibatch)
+        return train_state, log_data0.prefix("min/").merge(log_data1.prefix("max/"))

@@ -31,7 +31,7 @@ def visualize_encode_decode(
     """Generate a plot to visualize some MNIST encoding/decoding pairs. Returned as a
     numpy array."""
     (batch_size,) = minibatch.get_batch_axes()
-    assert batch_size >= 8, "Visualization assume >=10 images."
+    assert batch_size >= 8, "Visualization assume >=8 images."
     X = minibatch.image[:8]
     X_hat = _encode_then_decode(train_state, X)
 

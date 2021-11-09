@@ -4,8 +4,8 @@ import jax
 import numpy as onp
 from jax import numpy as jnp
 
-N = 2000
-D = 10
+N = 2048
+D = 128
 
 X = onp.random.randn(N, D)
 
