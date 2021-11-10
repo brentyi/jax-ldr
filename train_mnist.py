@@ -91,7 +91,8 @@ def main(args: Args):
                 )
 
             # Run minimax step.
-            train_state, log_data = train_state.min_then_max_step(minibatch)
+            with fifteen.utils.stopwatch("step"):
+                train_state, log_data = train_state.min_then_max_step(minibatch)
 
             # Log to Tensorboard.
             experiment.log(
