@@ -39,18 +39,37 @@ def ldr_score_terms(
     for logging/inspection/debugging."""
 
     N, K = one_hot_labels.shape
+    N_, D = Z.shape
+    assert N == N_ and Z_hat.shape == Z.shape
 
-    # Compute autocorrelation matrices.
-    ZZ_T = jnp.einsum("ni,nj->nij", Z, Z)
-    ZZ_T_hat = jnp.einsum("ni,nj->nij", Z_hat, Z_hat)
+    def _masked_ZTZ(Z: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+        assert Z.shape == (N, D)
+        assert mask.shape == (N,)
+        Z_masked = jnp.where(mask[:, None], Z, 0.0)
+        ZTZ = Z_masked.T @ Z_masked
+        assert ZTZ.shape == (D, D)
+        return ZTZ
 
-    # Pre-compute coding rates for each class. Should be shape (K,).
-    encoded_coding_rate_per_class = mcr.coding_rate_per_class(
-        ZZ_T, one_hot_labels, epsilon_sq
+    # Compute a `Z.T @ Z` matrix for each class.
+    encoded_ZTZ_per_class = jax.vmap(lambda mask: _masked_ZTZ(Z, mask))(
+        one_hot_labels.T  # (K, N)
     )
-    transcribed_coding_rate_per_class = mcr.coding_rate_per_class(
-        ZZ_T_hat, one_hot_labels, epsilon_sq
+    transcribed_ZTZ_per_class = jax.vmap(lambda mask: _masked_ZTZ(Z_hat, mask))(
+        one_hot_labels.T  # (K, N)
     )
+    assert encoded_ZTZ_per_class.shape == transcribed_ZTZ_per_class.shape == (K, D, D)
+
+    # Compute per-class counts.
+    count_per_class = jnp.sum(one_hot_labels, axis=0)
+    assert count_per_class.shape == (K,)
+
+    # Compute per-class coding rates.
+    encoded_coding_rate_per_class = jax.vmap(
+        lambda ZTZ, count: mcr.coding_rate_from_ZTZ(ZTZ, count, epsilon_sq)
+    )(encoded_ZTZ_per_class, count_per_class)
+    transcribed_coding_rate_per_class = jax.vmap(
+        lambda ZTZ, count: mcr.coding_rate_from_ZTZ(ZTZ, count, epsilon_sq)
+    )(transcribed_ZTZ_per_class, count_per_class)
     assert (
         encoded_coding_rate_per_class.shape
         == transcribed_coding_rate_per_class.shape
@@ -60,32 +79,29 @@ def ldr_score_terms(
     # Our score is made of 3 parts, consisting of coding rates that correspond to: an
     # expansive encoding score, compressive decoding score, and a sum over per-class
     # contrastive/contractive terms.
-    expansive_encode = mcr.multiclass_coding_rate_delta_from_autocorrelations(
-        ZZ_T,
+    expansive_encode = mcr.multiclass_coding_rate_delta(
+        Z,
+        encoded_coding_rate_per_class,
         one_hot_labels,
         epsilon_sq,
-        precomputed_coding_rate_per_class=encoded_coding_rate_per_class,  # Optional.
     )
-    compressive_decode = mcr.multiclass_coding_rate_delta_from_autocorrelations(
-        ZZ_T_hat,
+    compressive_decode = mcr.multiclass_coding_rate_delta(
+        Z_hat,
+        transcribed_coding_rate_per_class,
         one_hot_labels,
         epsilon_sq,
-        precomputed_coding_rate_per_class=transcribed_coding_rate_per_class,  # Optional.
     )
     contrastive_contractive_terms = jax.vmap(
-        lambda mask, rate0, rate1: mcr.coding_rate_distance_from_autocorrelations(
-            ZZ_T_0=ZZ_T,
-            ZZ_T_1=ZZ_T_hat,
-            epsilon_sq=epsilon_sq,
-            mask_0=mask,
-            mask_1=mask,
-            precomputed_ZZ_T_0_coding_rate=rate0,  # Optional.
-            precomputed_ZZ_T_1_coding_rate=rate1,  # Optional.
+        # Coding rate distances.
+        lambda union_ZTZ, encoded_coding_rate, transcribed_coding_rate, count: mcr.coding_rate_from_ZTZ(
+            union_ZTZ, count * 2, epsilon_sq
         )
+        - 0.5 * (encoded_coding_rate + transcribed_coding_rate)
     )(
-        one_hot_labels.T,  # (K, N)
-        encoded_coding_rate_per_class,  # (K,)
-        transcribed_coding_rate_per_class,  # (K,)
+        encoded_ZTZ_per_class + transcribed_ZTZ_per_class,
+        encoded_coding_rate_per_class,
+        transcribed_coding_rate_per_class,
+        count_per_class,
     )
     assert contrastive_contractive_terms.shape == (K,)
 

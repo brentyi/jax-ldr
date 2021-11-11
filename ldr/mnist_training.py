@@ -182,7 +182,7 @@ class TrainState:
             ),
         )
 
-    def min_step(
+    def _min_step(
         self,
         minibatch: mnist_data.MnistStruct,
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
@@ -221,7 +221,7 @@ class TrainState:
             }
         )
 
-    def max_step(
+    def _max_step(
         self,
         minibatch: mnist_data.MnistStruct,
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
@@ -274,6 +274,6 @@ class TrainState:
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
         """Run a min, then a max step. And JIT the full thing."""
         train_state = self
-        train_state, log_data0 = train_state.min_step(minibatch)
-        train_state, log_data1 = train_state.max_step(minibatch)
+        train_state, log_data0 = train_state._min_step(minibatch)
+        train_state, log_data1 = train_state._max_step(minibatch)
         return train_state, log_data0.prefix("min/").merge(log_data1.prefix("max/"))

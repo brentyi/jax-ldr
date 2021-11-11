@@ -44,7 +44,7 @@ def main(args: Args):
     train_dataloader = fifteen.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        num_workers=4,
+        num_workers=4
     )
     train_state = mnist_training.TrainState.setup(
         config=args.train_config,
@@ -90,9 +90,8 @@ def main(args: Args):
                     step=train_state.steps,
                 )
 
-            # Run minimax step.
-            with fifteen.utils.stopwatch("step"):
-                train_state, log_data = train_state.min_then_max_step(minibatch)
+            # Run combined minimax step.
+            train_state, log_data = train_state.min_then_max_step(minibatch)
 
             # Log to Tensorboard.
             experiment.log(
