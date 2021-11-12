@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Any, Optional, Tuple, cast
+from typing import Any, Optional, Tuple
 
 import fifteen
 import flax
@@ -20,7 +20,7 @@ class OptimizerConfig:
     learning_rate: float = 1e-4
     scheduler: Literal["linear", "none"] = "linear"
     adam_beta1: float = 0.5
-    adam_beta2: float = 0.9
+    adam_beta2: float = 0.999
 
 
 @dataclasses.dataclass
@@ -97,137 +97,32 @@ class TrainState:
             steps=0,
         )
 
-    def _compute_score(
-        self,
-        minibatch: mnist_data.MnistStruct,
-        f_params: Optional[flax.core.FrozenDict] = None,
-        g_params: Optional[flax.core.FrozenDict] = None,
-    ) -> Tuple[
-        jnp.ndarray,
-        Tuple[
-            flax.core.FrozenDict,
-            flax.core.FrozenDict,
-            fifteen.experiments.TensorboardLogData,
-        ],
-    ]:
-        """Score computation helper for train time.
-
-        Args:
-            minibatch (mnist_data.MnistStruct): Minibatch.
-            f_params (Optional[flax.core.FrozenDict]): Encoder params override. Optional,
-                but useful for gradients.
-            g_params (Optional[flax.core.FrozenDict]): Decoder params override. Optional,
-                but useful for gradients.
-
-        Returns:
-            Score,
-        """
-        if f_params is None:
-            f_params = self.f_state["params"]
-        if g_params is None:
-            g_params = self.g_state["params"]
-
-        # We'll be updating our states with batch statistics.
-        # TODO: figure out a cleaner way to do this!
-        f_state = self.f_state
-        g_state = self.g_state
-
-        X = minibatch.image
-        Z, f_state = self.f_model.apply(
-            {"params": f_params, "batch_stats": f_state["batch_stats"]},
-            X,
-            train=True,
-            mutable=["batch_stats"],
-        )
-        X_hat, g_state = self.g_model.apply(
-            {"params": g_params, "batch_stats": g_state["batch_stats"]},
-            jax.lax.stop_gradient(Z),
-            train=True,
-            mutable=["batch_stats"],
-        )
-        Z_hat, f_state = self.f_model.apply(
-            {"params": f_params, "batch_stats": f_state["batch_stats"]},
-            X_hat,
-            train=True,
-            mutable=["batch_stats"],
-        )
-        assert Z.shape == Z_hat.shape == (minibatch.get_batch_axes()[0], 128)
-
-        a, b, c = ldr.ldr_score_terms(
-            Z=Z,
-            Z_hat=Z_hat,
-            one_hot_labels=minibatch.label,
-            epsilon_sq=self.config.ldr_epsilon_sq,
-        )
-        score = a + b + c
-
-        histogram_sample_size = 50
-        X_minus_X_hat = X[histogram_sample_size:] - X_hat[histogram_sample_size:]
-        return score, (
-            f_state,
-            g_state,
-            fifteen.experiments.TensorboardLogData(
-                scalars={
-                    "1_expansive_encode": a,
-                    "2_compressive_decode": b,
-                    "3_contrastive_contractive": c,
-                    "1_minus_2": a - b,
-                    "mse": jnp.mean(X_minus_X_hat ** 2),
-                },
-                histograms={
-                    "X": X[histogram_sample_size:],
-                    "X_hat": X_hat[histogram_sample_size:],
-                    "X_minus_X_hat": X_minus_X_hat,
-                },
-            ),
-        )
-
-    def _min_step(
+    @jax.jit
+    def sequential_minimax_step(
         self,
         minibatch: mnist_data.MnistStruct,
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
-        """Run one LDR score minimization step. Updates decoder parameters."""
-        (batch_size,) = minibatch.get_batch_axes()
+        """Run a min, then a max step. Backprops twice."""
+        train_state = self
+        train_state = _min_step(train_state, minibatch)
+        train_state, log_data = _max_step(train_state, minibatch)
+        with jax_dataclasses.copy_and_mutate(train_state) as train_state:
+            train_state.steps = train_state.steps + 1
+        return train_state, log_data
 
-        (
-            score,
-            (
-                f_state_updated_batch_stats,
-                g_state_updated_batch_stats,
-                _compute_score_log_data,
-            ),
-        ), grads = jax.value_and_grad(
-            lambda g_params: self._compute_score(minibatch, g_params=g_params),
-            has_aux=True,
-        )(
-            self.g_state["params"]
-        )
-        g_params_updates, g_optimizer_state_new = self.g_optimizer.tx.update(
-            grads, self.g_optimizer.state, self.g_state["params"]
-        )
-        with jax_dataclasses.copy_and_mutate(self, validate=True) as out:
-            out.g_optimizer.state = g_optimizer_state_new
-            out.f_state = self.f_state.copy(f_state_updated_batch_stats)
-            out.g_state = flax.core.FrozenDict(
-                params=optax.apply_updates(self.g_state["params"], g_params_updates),
-                **g_state_updated_batch_stats
-            )
-            out.steps = self.steps + 1
-
-        return out, fifteen.experiments.TensorboardLogData(
-            scalars={
-                "global_norm": optax.global_norm(grads),
-                "score": score,
-            }
-        )
-
-    def _max_step(
+    @jax.jit
+    def synchronous_minimax_step(
         self,
         minibatch: mnist_data.MnistStruct,
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
-        """Run LDR score minimization step. Updates encoder parameters."""
+        """Run min and max steps synchronously. Backprops only once.
+
+        Note: if not for compatibility with the sequential minimax interface, this could
+        be implemented much more simply. (for example: we could use a single optimizer
+        rather than two separate ones)"""
         (batch_size,) = minibatch.get_batch_axes()
 
+        # Compute gradient with respect to LDR score.
         (
             score,
             (
@@ -236,44 +131,211 @@ class TrainState:
                 compute_score_log_data,
             ),
         ), grads = jax.value_and_grad(
-            lambda f_params: self._compute_score(minibatch, f_params=f_params),
+            lambda params: _compute_ldr_score(
+                self, minibatch, f_params=params[0], g_params=params[1]
+            ),
             has_aux=True,
         )(
-            self.f_state["params"]
+            (self.f_state["params"], self.g_state["params"])
         )
-
-        # Flip the gradients to maximize instead of minimize.
-        grads = jax.tree_map(lambda x: -x, grads)
 
         f_params_updates, f_optimizer_state_new = self.f_optimizer.tx.update(
-            grads, self.f_optimizer.state, self.f_state["params"]
+            grads[0], self.f_optimizer.state, self.f_state["params"]
         )
+        g_params_updates, g_optimizer_state_new = self.g_optimizer.tx.update(
+            grads[1], self.g_optimizer.state, self.g_state["params"]
+        )
+
         with jax_dataclasses.copy_and_mutate(self, validate=True) as out:
             out.f_optimizer.state = f_optimizer_state_new
+            out.g_optimizer.state = g_optimizer_state_new
             out.f_state = flax.core.FrozenDict(
-                params=optax.apply_updates(self.f_state["params"], f_params_updates),
+                # Important: we *subtract* the ADAM step. This turns our objective into
+                # a maximization.
+                params=jax.tree_map(
+                    jnp.subtract, self.f_state["params"], f_params_updates
+                ),
                 **f_state_updated_batch_stats
             )
-            out.g_state = self.g_state.copy(g_state_updated_batch_stats)
+            out.g_state = flax.core.FrozenDict(
+                # This map is the same as optax.apply_updates.
+                params=jax.tree_map(jnp.add, self.g_state["params"], g_params_updates),
+                **g_state_updated_batch_stats
+            )
             out.steps = self.steps + 1
 
         return (
             out,
             fifteen.experiments.TensorboardLogData(
                 scalars={
-                    "global_norm": optax.global_norm(grads),
+                    "gradient_norm": optax.global_norm(grads),
                     "score": score,
                 }
             ).merge(compute_score_log_data.prefix("compute_score/")),
         )
 
-    @jax.jit
-    def min_then_max_step(
-        self,
-        minibatch: mnist_data.MnistStruct,
-    ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
-        """Run a min, then a max step. And JIT the full thing."""
-        train_state = self
-        train_state, log_data0 = train_state._min_step(minibatch)
-        train_state, log_data1 = train_state._max_step(minibatch)
-        return train_state, log_data0.prefix("min/").merge(log_data1.prefix("max/"))
+
+def _compute_ldr_score(
+    train_state: TrainState,
+    minibatch: mnist_data.MnistStruct,
+    f_params: Optional[flax.core.FrozenDict] = None,
+    g_params: Optional[flax.core.FrozenDict] = None,
+) -> Tuple[
+    jnp.ndarray,
+    Tuple[
+        flax.core.FrozenDict,
+        flax.core.FrozenDict,
+        fifteen.experiments.TensorboardLogData,
+    ],
+]:
+    """Score computation helper for train time.
+
+    Args:
+        minibatch (mnist_data.MnistStruct): Minibatch.
+        f_params (Optional[flax.core.FrozenDict]): Encoder params override. Optional,
+            but useful for gradients.
+        g_params (Optional[flax.core.FrozenDict]): Decoder params override. Optional,
+            but useful for gradients.
+
+    Returns:
+        Score,
+    """
+    if f_params is None:
+        f_params = train_state.f_state["params"]
+    if g_params is None:
+        g_params = train_state.g_state["params"]
+
+    # We'll be updating our states with batch statistics.
+    # TODO: figure out a cleaner way to do this!
+    f_state = train_state.f_state
+    g_state = train_state.g_state
+
+    X = minibatch.image
+    Z, f_state = train_state.f_model.apply(
+        {"params": f_params, "batch_stats": f_state["batch_stats"]},
+        X,
+        train=True,
+        mutable=["batch_stats"],
+    )
+    X_hat, g_state = train_state.g_model.apply(
+        {"params": g_params, "batch_stats": g_state["batch_stats"]},
+        jax.lax.stop_gradient(Z),
+        train=True,
+        mutable=["batch_stats"],
+    )
+    Z_hat, f_state = train_state.f_model.apply(
+        {"params": f_params, "batch_stats": f_state["batch_stats"]},
+        X_hat,
+        train=True,
+        mutable=["batch_stats"],
+    )
+    assert Z.shape == Z_hat.shape == (minibatch.get_batch_axes()[0], 128)
+
+    a, b, c = ldr.ldr_score_terms(
+        Z=Z,
+        Z_hat=Z_hat,
+        one_hot_labels=minibatch.label,
+        epsilon_sq=train_state.config.ldr_epsilon_sq,
+    )
+    score = a + b + c
+
+    histogram_sample_size = 50
+    X_minus_X_hat = X[histogram_sample_size:] - X_hat[histogram_sample_size:]
+    return score, (
+        f_state,
+        g_state,
+        fifteen.experiments.TensorboardLogData(
+            scalars={
+                "1_expansive_encode": a,
+                "2_compressive_decode": b,
+                "3_contrastive_contractive": c,
+                "1_minus_2": a - b,
+                "mse": jnp.mean(X_minus_X_hat ** 2),
+            },
+            histograms={
+                "X": X[histogram_sample_size:],
+                "X_hat": X_hat[histogram_sample_size:],
+                "X_minus_X_hat": X_minus_X_hat,
+            },
+        ),
+    )
+
+
+def _min_step(
+    train_state: TrainState,
+    minibatch: mnist_data.MnistStruct,
+) -> "TrainState":
+    """Run one LDR score minimization step. Updates decoder parameters."""
+    (batch_size,) = minibatch.get_batch_axes()
+
+    (
+        score,
+        (
+            f_state_updated_batch_stats,
+            g_state_updated_batch_stats,
+            _compute_score_log_data,
+        ),
+    ), grads = jax.value_and_grad(
+        lambda g_params: _compute_ldr_score(train_state, minibatch, g_params=g_params),
+        has_aux=True,
+    )(
+        train_state.g_state["params"]
+    )
+    g_params_updates, g_optimizer_state_new = train_state.g_optimizer.tx.update(
+        grads, train_state.g_optimizer.state, train_state.g_state["params"]
+    )
+    with jax_dataclasses.copy_and_mutate(train_state, validate=True) as out:
+        out.g_optimizer.state = g_optimizer_state_new
+        out.f_state = train_state.f_state.copy(f_state_updated_batch_stats)
+        out.g_state = flax.core.FrozenDict(
+            params=optax.apply_updates(train_state.g_state["params"], g_params_updates),
+            **g_state_updated_batch_stats
+        )
+
+    return out
+
+
+def _max_step(
+    train_state: TrainState,
+    minibatch: mnist_data.MnistStruct,
+) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
+    """Run LDR score minimization step. Updates encoder parameters."""
+    (batch_size,) = minibatch.get_batch_axes()
+
+    (
+        score,
+        (
+            f_state_updated_batch_stats,
+            g_state_updated_batch_stats,
+            compute_score_log_data,
+        ),
+    ), grads = jax.value_and_grad(
+        lambda f_params: _compute_ldr_score(train_state, minibatch, f_params=f_params),
+        has_aux=True,
+    )(
+        train_state.f_state["params"]
+    )
+
+    # Flip the gradients to maximize instead of minimize.
+    grads = jax.tree_map(lambda x: -x, grads)
+
+    f_params_updates, f_optimizer_state_new = train_state.f_optimizer.tx.update(
+        grads, train_state.f_optimizer.state, train_state.f_state["params"]
+    )
+    with jax_dataclasses.copy_and_mutate(train_state, validate=True) as out:
+        out.f_optimizer.state = f_optimizer_state_new
+        out.f_state = flax.core.FrozenDict(
+            params=optax.apply_updates(train_state.f_state["params"], f_params_updates),
+            **f_state_updated_batch_stats
+        )
+        out.g_state = train_state.g_state.copy(g_state_updated_batch_stats)
+
+    return (
+        out,
+        fifteen.experiments.TensorboardLogData(
+            scalars={
+                "gradient_norm": optax.global_norm(grads),
+                "score": score,
+            }
+        ).merge(compute_score_log_data.prefix("compute_score/")),
+    )

@@ -1,8 +1,5 @@
 """Helper functions for computing coding rates."""
 
-from typing import Optional
-
-import jax
 from jax import numpy as jnp
 
 _count = 0

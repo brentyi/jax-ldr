@@ -1,7 +1,6 @@
 import io
 
 import jax
-import matplotlib
 import numpy as onp
 import PIL
 from jax import numpy as jnp

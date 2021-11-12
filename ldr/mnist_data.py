@@ -1,8 +1,7 @@
 import math
-from typing import Iterable, Literal, TypeVar, cast
+from typing import Literal
 
 import datasets
-import fifteen
 import jax
 import jax_dataclasses
 import numpy as onp

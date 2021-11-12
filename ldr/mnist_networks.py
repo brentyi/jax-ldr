@@ -2,9 +2,6 @@
 
 Loosely adapted from: https://github.com/bilal2vec/jax-dcgan/blob/main/dcgan.ipynb"""
 
-from typing import TypedDict
-
-import flax
 from flax import linen as nn
 from jax import numpy as jnp
 
