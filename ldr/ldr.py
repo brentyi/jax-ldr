@@ -1,4 +1,4 @@
-from typing import Any, Tuple
+from typing import Any, Callable, Tuple, TypeVar
 
 import jax
 from jax import numpy as jnp
@@ -6,6 +6,27 @@ from jax import numpy as jnp
 from . import mcr
 
 Pytree = Any
+
+
+CallableType = TypeVar("CallableType", bound=Callable)
+
+
+def _looped_vmap(func: CallableType) -> CallableType:
+    def looped_func(*args, **kwargs):
+        batch_count = None
+        for leaf in jax.tree_leaves((args, kwargs)):
+            if batch_count is None:
+                batch_count = leaf.shape[0]
+            else:
+                assert batch_count == leaf.shape[0]
+
+        output = []
+        for i in range(batch_count):
+            a, kw = jax.tree_map(lambda x: x[i], (args, kwargs))
+            output.append(func(*a, **kw))
+        return jax.tree_map(lambda *x: jnp.stack(x, axis=0), output)
+
+    return looped_func  # type: ignore
 
 
 def ldr_score(
@@ -25,6 +46,8 @@ def ldr_score_terms(
     Z_hat: jnp.ndarray,  # f(g(f(X)))
     one_hot_labels: jnp.ndarray,
     epsilon_sq: float,
+    *,
+    use_vmap: bool = True,  # Set to False to replace vmap with for loops.
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Compute the three terms used as a score for the minimax game proposed in
     `Closed-Loop Data Transcription to an LDR via Minimaxing Rate Reduction`, by
@@ -50,12 +73,17 @@ def ldr_score_terms(
         assert ZTZ.shape == (D, D)
         return ZTZ
 
+    if use_vmap:
+        vmap = jax.vmap
+    else:
+        vmap = _looped_vmap  # type: ignore
+
     # Compute a `Z.T @ Z` matrix for each class.
-    encoded_ZTZ_per_class = jax.vmap(lambda mask: _masked_ZTZ(Z, mask))(
+    encoded_ZTZ_per_class = vmap(lambda mask: _masked_ZTZ(Z, mask))(
         # Shape should be (K, N); batching over the K axis.
         one_hot_labels.T  # type: ignore
     )
-    transcribed_ZTZ_per_class = jax.vmap(lambda mask: _masked_ZTZ(Z_hat, mask))(
+    transcribed_ZTZ_per_class = vmap(lambda mask: _masked_ZTZ(Z_hat, mask))(
         # Shape should be (K, N); batching over the K axis.
         one_hot_labels.T  # type: ignore
     )
@@ -66,10 +94,10 @@ def ldr_score_terms(
     assert count_per_class.shape == (K,)
 
     # Compute per-class coding rates.
-    encoded_coding_rate_per_class = jax.vmap(
+    encoded_coding_rate_per_class = vmap(
         lambda ZTZ, count: mcr.coding_rate_from_ZTZ(ZTZ, count, epsilon_sq)
     )(encoded_ZTZ_per_class, count_per_class)
-    transcribed_coding_rate_per_class = jax.vmap(
+    transcribed_coding_rate_per_class = vmap(
         lambda ZTZ, count: mcr.coding_rate_from_ZTZ(ZTZ, count, epsilon_sq)
     )(transcribed_ZTZ_per_class, count_per_class)
     assert (

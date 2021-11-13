@@ -27,6 +27,7 @@ class OptimizerConfig:
 class TrainConfig:
     ldr_epsilon_sq: float = 0.5
     optimizer: OptimizerConfig = OptimizerConfig()
+    use_vmap: bool = True  # Set to False to loop over classes instead of vmapping. Just for better understanding runtime.
 
 
 @jax_dataclasses.pytree_dataclass
@@ -122,7 +123,7 @@ class TrainState:
         rather than two separate ones)"""
         (batch_size,) = minibatch.get_batch_axes()
 
-        # Compute gradient with respect to LDR score.
+        # Compute gradient of LDR score with respect to encoder and decoder parameters.
         (
             score,
             (
@@ -150,15 +151,16 @@ class TrainState:
             out.f_optimizer.state = f_optimizer_state_new
             out.g_optimizer.state = g_optimizer_state_new
             out.f_state = flax.core.FrozenDict(
-                # Important: we *subtract* the ADAM step. This turns our objective into
-                # a maximization.
+                # Important: we *subtract* the ADAM step for our encoder. This turns our
+                # objective into a maximization.
                 params=jax.tree_map(
                     jnp.subtract, self.f_state["params"], f_params_updates
                 ),
                 **f_state_updated_batch_stats
             )
             out.g_state = flax.core.FrozenDict(
-                # This map is the same as optax.apply_updates.
+                # This map is the same as optax.apply_updates. An addition here means we
+                # get a minimization.
                 params=jax.tree_map(jnp.add, self.g_state["params"], g_params_updates),
                 **g_state_updated_batch_stats
             )
@@ -170,7 +172,7 @@ class TrainState:
                 scalars={
                     "gradient_norm": optax.global_norm(grads),
                     "score": score,
-                }
+                },
             ).merge(compute_score_log_data.prefix("compute_score/")),
         )
 
@@ -236,6 +238,7 @@ def _compute_ldr_score(
         Z_hat=Z_hat,
         one_hot_labels=minibatch.label,
         epsilon_sq=train_state.config.ldr_epsilon_sq,
+        use_vmap=train_state.config.use_vmap,
     )
     score = a + b + c
 
@@ -299,7 +302,7 @@ def _max_step(
     train_state: TrainState,
     minibatch: mnist_data.MnistStruct,
 ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
-    """Run LDR score minimization step. Updates encoder parameters."""
+    """Run LDR score maximization step. Updates encoder parameters."""
     (batch_size,) = minibatch.get_batch_axes()
 
     (
