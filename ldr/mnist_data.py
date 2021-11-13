@@ -31,8 +31,7 @@ def make_one_hot(labels: onp.ndarray, num_classes: int) -> onp.ndarray:
 def load_mnist_dataset(split: Literal["train", "test"]) -> "MnistStruct":
     """Load entire MNIST dataset into an `MnistStruct` container."""
     d = datasets.load_dataset("mnist")
-    d.set_format("numpy")
-
+    d.set_format("numpy")  # type: ignore
     images = []
     for im in d[split]["image"]:  # type: ignore
         images.append(

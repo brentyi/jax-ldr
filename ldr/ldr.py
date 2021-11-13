@@ -9,8 +9,8 @@ Pytree = Any
 
 
 def ldr_score(
-    Z,  # f(x)
-    Z_hat,  # f(g(f(X)))
+    Z: jnp.ndarray,  # f(x)
+    Z_hat: jnp.ndarray,  # f(g(f(X)))
     one_hot_labels: jnp.ndarray,
     epsilon_sq: float,
 ) -> jnp.ndarray:
@@ -21,8 +21,8 @@ def ldr_score(
 
 
 def ldr_score_terms(
-    Z,  # f(x)
-    Z_hat,  # f(g(f(X)))
+    Z: jnp.ndarray,  # f(x)
+    Z_hat: jnp.ndarray,  # f(g(f(X)))
     one_hot_labels: jnp.ndarray,
     epsilon_sq: float,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -52,10 +52,12 @@ def ldr_score_terms(
 
     # Compute a `Z.T @ Z` matrix for each class.
     encoded_ZTZ_per_class = jax.vmap(lambda mask: _masked_ZTZ(Z, mask))(
-        one_hot_labels.T  # (K, N)
+        # Shape should be (K, N); batching over the K axis.
+        one_hot_labels.T  # type: ignore
     )
     transcribed_ZTZ_per_class = jax.vmap(lambda mask: _masked_ZTZ(Z_hat, mask))(
-        one_hot_labels.T  # (K, N)
+        # Shape should be (K, N); batching over the K axis.
+        one_hot_labels.T  # type: ignore
     )
     assert encoded_ZTZ_per_class.shape == transcribed_ZTZ_per_class.shape == (K, D, D)
 

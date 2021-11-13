@@ -1,0 +1,9 @@
+jax
+jaxlib
+flax
+jax_dataclasses
+dcargs
+git+https://github.com/brentyi/fifteen.git
+tqdm
+# tensorflow is needed for tensorboard logging in JAX
+tensorflow

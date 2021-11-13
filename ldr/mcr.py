@@ -33,7 +33,7 @@ def coding_rate(Z: jnp.ndarray, epsilon_sq: float) -> jnp.ndarray:
     set of vectors Z, how many balls of radius epsilon fit inside? The log of this
     number will be proportional to the bit count `R`."""
     N, D = Z.shape
-    return coding_rate_from_ZTZ(Z.T @ Z, N, epsilon_sq)
+    return coding_rate_from_ZTZ(Z.T @ Z, N, epsilon_sq)  # type: ignore
 
 
 def multiclass_coding_rate_delta(
