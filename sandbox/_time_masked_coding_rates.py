@@ -1,4 +1,6 @@
+import math
 import timeit
+from typing import Callable, TypeVar
 
 import jax
 import numpy as onp
@@ -20,60 +22,136 @@ def coding_rate(A: jnp.ndarray, epsilon_sq: float = 0.5) -> jnp.ndarray:
     return logdet_hermitian(I + alpha * A)
 
 
-N = 2048
-D = 128
+def make_one_hot(labels: onp.ndarray, num_classes: int) -> onp.ndarray:
+    """Convert integer labels to one-hot. Supports arbitrary batch axes."""
+    batch_axes = labels.shape
+    out_flat = onp.zeros((math.prod(batch_axes), num_classes), dtype=onp.uint8)
+    out_flat[onp.arange(out_flat.shape[0]), labels.flatten()] = 1
+    return out_flat.reshape(labels.shape + (num_classes,))
+
+
+CallableType = TypeVar("CallableType", bound=Callable)
+
+
+def _looped_vmap(func: CallableType) -> CallableType:
+    """Drop-in replacement for `jax.vmap`, which instead uses a for loop."""
+    # print("Looping!")
+    def looped_func(*args, **kwargs):
+        batch_count = None
+        for leaf in jax.tree_leaves((args, kwargs)):
+            if batch_count is None:
+                batch_count = leaf.shape[0]
+            else:
+                assert batch_count == leaf.shape[0]
+
+        output = []
+        for i in range(batch_count):
+            a, kw = jax.tree_map(lambda x: x[i], (args, kwargs))
+            output.append(func(*a, **kw))
+        return jax.tree_map(lambda *x: jnp.stack(x, axis=0), *output)
+
+    return looped_func  # type: ignore
+
+
+K = 10  # Number of classes. One coding rate computed for each class.
+N = 2048  # Batch size per class.
+D = 128  # Latent dimension.
 X = onp.random.randn(N, D)
+one_hot_labels = make_one_hot(
+    onp.random.randint(low=0, high=K, size=(N,)), num_classes=K
+)
+assert one_hot_labels.shape == (N, K)
 
 
-def _apply_mask(X: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+def _apply_mask_where(X: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     return jnp.where(mask[:, None], X, 0.0)
 
 
-class_count = 20
-masks = onp.random.randint(low=0, high=2, size=(class_count, N)) == 1
+def _apply_mask_multiply(X: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+    return mask[:, None] * X
 
 
-def simple_zeroed(X):
-    total = 0
-    for i in range(class_count):
-        X_masked = _apply_mask(X, mask=masks[i])
-        total = total + coding_rate(X_masked.T @ X_masked)
-    return total
+def make_simple_zeroed(apply_mask, vmap):
+    def simple_zeroed(X):
+        total = 0
+
+        def f(mask):
+            X_masked = apply_mask(X, mask=mask)
+            return coding_rate(X_masked.T @ X_masked)
+
+        return jnp.sum(vmap(f)(one_hot_labels.T))
+        return total
+
+    return simple_zeroed
 
 
-def einsum_zeroed(X):
-    total = 0
-    for i in range(class_count):
-        X_masked = _apply_mask(X, mask=masks[i])
-        total = total + coding_rate(jnp.einsum("ni,nj->ij", X_masked, X_masked))
-    return total
+def make_einsum_zeroed(apply_mask, vmap):
+    def einsum_zeroed(X):
+        total = 0
+
+        def f(mask):
+            X_masked = apply_mask(X, mask=mask)
+            return coding_rate(jnp.einsum("ni,nj->ij", X_masked, X_masked))
+
+        return jnp.sum(vmap(f)(one_hot_labels.T))
+        return total
+
+    return einsum_zeroed
 
 
-def einsum_then_sum_where(X):
-    XX_T = jnp.einsum("ni,nj->nij", X, X)
-    total = 0
-    for i in range(class_count):
-        total = total + coding_rate(
-            jnp.sum(XX_T, axis=0, where=masks[i, :, None, None])
+def make_einsum_then_sum_where(vmap):
+    def einsum_then_sum_where(X):
+        XX_T = jnp.einsum("ni,nj->nij", X, X)
+        return jnp.sum(
+            vmap(
+                lambda mask: coding_rate(
+                    jnp.sum(XX_T, axis=0, where=mask[:, None, None])
+                )
+            )(
+                one_hot_labels.T,
+            )
         )
-    return total
+
+    return einsum_then_sum_where
 
 
 coding_rate_funcs = {
-    "simple_zeroed": simple_zeroed,
-    "einsum_zeroed": einsum_zeroed,
-    "einsum_then_sum_where": einsum_then_sum_where,
+    # Vectorized
+    "simple_zeroed_where_mask": make_simple_zeroed(_apply_mask_where, jax.vmap),
+    "einsum_zeroed_where_mask": make_einsum_zeroed(_apply_mask_where, jax.vmap),
+    "simple_zeroed_multiply_mask": make_simple_zeroed(_apply_mask_multiply, jax.vmap),
+    "einsum_zeroed_multiply_mask": make_einsum_zeroed(_apply_mask_multiply, jax.vmap),
+    # "einsum_then_sum_where": make_einsum_then_sum_where(jax.vmap),
+    # Looped
+    "looped_simple_zeroed_where_mask": make_simple_zeroed(
+        _apply_mask_where, _looped_vmap
+    ),
+    "looped_einsum_zeroed_where_mask": make_einsum_zeroed(
+        _apply_mask_where, _looped_vmap
+    ),
+    "looped_simple_zeroed_multiply_mask": make_simple_zeroed(
+        _apply_mask_multiply, _looped_vmap
+    ),
+    "looped_einsum_zeroed_multiply_mask": make_einsum_zeroed(
+        _apply_mask_multiply, _looped_vmap
+    ),
+    # "looped_einsum_then_sum_where": make_einsum_then_sum_where(_looped_vmap),
 }
 
 print("FORWARD PASSES:")
+expected_out = None
 for name, f in coding_rate_funcs.items():
     jit_f = jax.jit(f)
-    jit_f(X)
-    print(f"{name}\t", timeit.timeit(lambda: jit_f(X), number=500))
+    out_f = jit_f(X)
+    if expected_out is not None:
+        onp.testing.assert_allclose(out_f, expected_out)
+    else:
+        expected_out = out_f
+    print(f"{name}\t", timeit.timeit(lambda: jit_f(X), number=200))
 
 print()
 print("BACKWARD PASSES:")
 for name, f in coding_rate_funcs.items():
     jit_grad_f = jax.jit(jax.grad(f))
     jit_grad_f(X)
-    print(f"{name}\t", timeit.timeit(lambda: jit_grad_f(X), number=500))
+    print(f"{name}\t", timeit.timeit(lambda: jit_grad_f(X), number=200))

@@ -1,5 +1,6 @@
 """Helper functions for computing coding rates."""
 
+import numpy as onp
 from jax import numpy as jnp
 
 _count = 0
@@ -21,7 +22,7 @@ def coding_rate_from_ZTZ(ZTZ: jnp.ndarray, N: int, epsilon_sq: float) -> jnp.nda
     D, D_ = ZTZ.shape
     assert D == D_
     alpha = D / (N * epsilon_sq)
-    A = jnp.eye(D) + alpha * ZTZ
+    A = onp.eye(D) + alpha * ZTZ
     assert A.shape == (D, D)
     return logdet_hermitian(A)
 

@@ -57,40 +57,45 @@ def main(args: Args):
     while train_state.steps < args.training_steps:
 
         for minibatch in tqdm(train_dataloader.minibatches(shuffle_seed=epoch)):
+            with fifteen.utils.stopwatch("step"):
 
-            # Run combined minimax step.
-            if args.synchronous_minimax:
-                train_state, log_data = train_state.synchronous_minimax_step(minibatch)
-            else:
-                train_state, log_data = train_state.sequential_minimax_step(minibatch)
+                # Run combined minimax step.
+                if args.synchronous_minimax:
+                    train_state, log_data = train_state.synchronous_minimax_step(
+                        minibatch
+                    )
+                else:
+                    train_state, log_data = train_state.sequential_minimax_step(
+                        minibatch
+                    )
 
-            # Log to Tensorboard.
-            experiment.log(
-                log_data,
-                step=train_state.steps,
-                log_scalars_every_n=10,
-                log_histograms_every_n=100,
-            )
-
-            # Checkpoint.
-            if train_state.steps % 50 == 0:
-                experiment.save_checkpoint(train_state, step=train_state.steps)
-                experiment.summary_writer.image(
-                    "encode_decode_test_set",
-                    mnist_viz.visualize_encode_decode(
-                        train_state,
-                        test_data,
-                    ),
+                # Log to Tensorboard.
+                experiment.log(
+                    log_data,
                     step=train_state.steps,
+                    log_scalars_every_n=10,
+                    log_histograms_every_n=100,
                 )
-                experiment.summary_writer.image(
-                    "encode_decode_train_set",
-                    mnist_viz.visualize_encode_decode(
-                        train_state,
-                        train_dataset.data,
-                    ),
-                    step=train_state.steps,
-                )
+
+                # Checkpoint.
+                if train_state.steps % 50 == 0:
+                    experiment.save_checkpoint(train_state, step=train_state.steps)
+                    experiment.summary_writer.image(
+                        "encode_decode_test_set",
+                        mnist_viz.visualize_encode_decode(
+                            train_state,
+                            test_data,
+                        ),
+                        step=train_state.steps,
+                    )
+                    experiment.summary_writer.image(
+                        "encode_decode_train_set",
+                        mnist_viz.visualize_encode_decode(
+                            train_state,
+                            train_dataset.data,
+                        ),
+                        step=train_state.steps,
+                    )
 
         epoch = epoch + 1
 

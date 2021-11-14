@@ -12,6 +12,8 @@ CallableType = TypeVar("CallableType", bound=Callable)
 
 
 def _looped_vmap(func: CallableType) -> CallableType:
+    """Drop-in replacement for `jax.vmap`, which instead uses a for loop."""
+
     def looped_func(*args, **kwargs):
         batch_count = None
         for leaf in jax.tree_leaves((args, kwargs)):
@@ -24,9 +26,18 @@ def _looped_vmap(func: CallableType) -> CallableType:
         for i in range(batch_count):
             a, kw = jax.tree_map(lambda x: x[i], (args, kwargs))
             output.append(func(*a, **kw))
-        return jax.tree_map(lambda *x: jnp.stack(x, axis=0), output)
+        return jax.tree_map(lambda *x: jnp.stack(x, axis=0), *output)
 
     return looped_func  # type: ignore
+
+
+def _masked_ZTZ(Z: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+    N, D = Z.shape
+    assert mask.shape == (N,)
+    Z_masked = jnp.where(mask[:, None], Z, 0.0)
+    ZTZ = Z_masked.T @ Z_masked
+    assert ZTZ.shape == (D, D)
+    return ZTZ
 
 
 def ldr_score(
@@ -47,7 +58,7 @@ def ldr_score_terms(
     one_hot_labels: jnp.ndarray,
     epsilon_sq: float,
     *,
-    use_vmap: bool = True,  # Set to False to replace vmap with for loops.
+    vectorize_over_classes: bool = True,  # Set to False to replace vmap with for loops.
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Compute the three terms used as a score for the minimax game proposed in
     `Closed-Loop Data Transcription to an LDR via Minimaxing Rate Reduction`, by
@@ -65,15 +76,7 @@ def ldr_score_terms(
     N_, D = Z.shape
     assert N == N_ and Z_hat.shape == Z.shape
 
-    def _masked_ZTZ(Z: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-        assert Z.shape == (N, D)
-        assert mask.shape == (N,)
-        Z_masked = jnp.where(mask[:, None], Z, 0.0)
-        ZTZ = Z_masked.T @ Z_masked
-        assert ZTZ.shape == (D, D)
-        return ZTZ
-
-    if use_vmap:
+    if vectorize_over_classes:
         vmap = jax.vmap
     else:
         vmap = _looped_vmap  # type: ignore

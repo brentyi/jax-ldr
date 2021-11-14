@@ -27,7 +27,12 @@ class OptimizerConfig:
 class TrainConfig:
     ldr_epsilon_sq: float = 0.5
     optimizer: OptimizerConfig = OptimizerConfig()
-    use_vmap: bool = True  # Set to False to loop over classes instead of vmapping. Just for better understanding runtime.
+
+    # Set to False to loop over classes instead of vectorizing. This typically leads to a slight
+    # runtime hit, but (counterintuitively) can also speed up sequential (not synchronous!)
+    # minimax. This probably has something to do with GPU memory layout + cache
+    # locality. Maybe.
+    vectorize_over_classes: bool = True
 
 
 @jax_dataclasses.pytree_dataclass
@@ -238,7 +243,7 @@ def _compute_ldr_score(
         Z_hat=Z_hat,
         one_hot_labels=minibatch.label,
         epsilon_sq=train_state.config.ldr_epsilon_sq,
-        use_vmap=train_state.config.use_vmap,
+        vectorize_over_classes=train_state.config.vectorize_over_classes,
     )
     score = a + b + c
 
