@@ -1,4 +1,5 @@
 import sys
+
 from tqdm.auto import tqdm
 
 sys.path.append("..")
@@ -6,11 +7,13 @@ sys.path.append("..")
 import functools
 import math
 import timeit
+from typing import List
 
 import jax
 import numpy as onp
-from ldr import ldr
 from matplotlib import pyplot as plt
+
+from ldr import ldr
 
 
 def make_one_hot(labels: onp.ndarray, num_classes: int) -> onp.ndarray:
@@ -57,11 +60,13 @@ for name, f in funcs.items():
         )
         assert one_hot_labels.shape == (N, K)
         # print("FORWARD PASS")
-        time = []
+        time: List[float] = []
         theta = onp.random.randn(D)
         jit_f = jax.jit(jax.grad(f))
         jit_f(theta, Z, one_hot_labels)
-        runtimes.append(timeit.timeit(lambda: jit_f(theta, Z, one_hot_labels), number=100))
+        runtimes.append(
+            timeit.timeit(lambda: jit_f(theta, Z, one_hot_labels), number=100)
+        )
     plt.plot(Ks, runtimes, label=name)
 
 plt.xlabel("K (number of classes)")

@@ -28,8 +28,8 @@ for name, f_raw in jax_logdets.items():
         for n in tqdm(dims):
             A = onp.random.randn(n, n)
             A = A @ A.T
-            f(A)
-            times.append(timeit.timeit(lambda: f(A), number=number))
+            f(A)  # type: ignore
+            times.append(timeit.timeit(lambda: f(A), number=number))  # type: ignore
         ax.plot(dims, times, label=name)
 
 ax0, ax1 = axes

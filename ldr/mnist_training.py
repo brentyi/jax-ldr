@@ -25,14 +25,16 @@ class OptimizerConfig:
 
 @dataclasses.dataclass
 class TrainConfig:
-    ldr_epsilon_sq: float = 0.5
+    training_steps: int = 4500
     optimizer: OptimizerConfig = OptimizerConfig()
 
-    # Set to False to loop over classes instead of vectorizing. This typically leads to a slight
-    # runtime hit, but (counterintuitively) can also speed up sequential (not synchronous!)
-    # minimax. This probably has something to do with GPU memory layout + cache
-    # locality. Maybe.
+    ldr_epsilon_sq: float = 0.5
+    """$\epsilon^2$ parameter used for MCR losses."""
+
     vectorize_over_classes: bool = True
+    """Set to False to loop over classes instead of vectorizing. This typically leads to
+    a slight runtime hit, but has empirically also sped up sequential (not synchronous!)
+    minimax on some older GPUs. Possibly related to memory layout."""
 
 
 @jax_dataclasses.pytree_dataclass
@@ -41,12 +43,16 @@ class Optimizer:
     state: optax.OptState
 
     @staticmethod
-    def setup(config: OptimizerConfig, params: Pytree) -> "Optimizer":
+    def setup(
+        config: OptimizerConfig,
+        params: Pytree,
+        training_steps: int,
+    ) -> "Optimizer":
         tx = optax.adam(
             learning_rate=optax.linear_schedule(
                 init_value=config.learning_rate,
                 end_value=0.0,
-                transition_steps=4500,
+                transition_steps=training_steps,
             )
             if config.scheduler == "linear"
             else config.learning_rate,
@@ -93,12 +99,16 @@ class TrainState:
             f_model=f_model,
             f_state=f_state,
             f_optimizer=Optimizer.setup(
-                config=config.optimizer, params=f_state["params"]
+                config=config.optimizer,
+                params=f_state["params"],
+                training_steps=config.training_steps,
             ),
             g_model=g_model,
             g_state=g_state,
             g_optimizer=Optimizer.setup(
-                config=config.optimizer, params=g_state["params"]
+                config=config.optimizer,
+                params=g_state["params"],
+                training_steps=config.training_steps,
             ),
             steps=0,
         )
@@ -117,7 +127,7 @@ class TrainState:
         return train_state, log_data
 
     @jax.jit
-    def synchronous_minimax_step(
+    def simultaneous_minimax_step(
         self,
         minibatch: mnist_data.MnistStruct,
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
