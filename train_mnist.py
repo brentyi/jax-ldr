@@ -59,7 +59,7 @@ def main(args: Args):
     while train_state.steps < args.train_config.training_steps:
 
         # Shuffle minibatches by epoch count.
-        epoch = train_state.steps // train_dataloader.minibatch_count()
+        epoch = int(train_state.steps // train_dataloader.minibatch_count())
         for minibatch in tqdm(train_dataloader.minibatches(shuffle_seed=epoch)):
             # Run minimax step.
             if args.simultaneous_minimax:
