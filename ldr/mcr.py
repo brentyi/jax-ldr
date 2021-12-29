@@ -3,8 +3,6 @@
 import numpy as onp
 from jax import numpy as jnp
 
-_count = 0
-
 
 def logdet_hermitian(A: jnp.ndarray) -> jnp.ndarray:
     """Compute the log-determinant of a Hermitian matrix."""

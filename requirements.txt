@@ -2,6 +2,7 @@ jax
 jaxlib
 flax
 jax_dataclasses
+datasets
 dcargs
 git+https://github.com/brentyi/fifteen.git
 tqdm

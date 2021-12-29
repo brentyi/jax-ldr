@@ -1,22 +1,23 @@
 # jax-ldr
 
-*Unofficial* implementation of [Closed-Loop Data Transcription to an LDR via
-Minimaxing Rate Reduction](https://arxiv.org/abs/2111.06636), using JAX/flax.
+JAX implementation of
+[Closed-Loop Data Transcription to an LDR via Minimaxing Rate Reduction](https://arxiv.org/abs/2111.06636).
 
-Learns a generative + discriminative representation of visual data with some
-nice underlying structures (classes are mapped to mutually incoherent linear
-subspaces) via rate reduction.
-
+Written as an exercise: currently only tested on MNIST and does not attempt to
+exactly reproduce the
+[original implementation](https://github.com/Delay-Xili/LDR).
 
 ## Usage
 
 Install:
+
 ```
 # This will install the CPU version of JAX if there's no JAX package installed.
 pip install -r requirements.txt
 ```
 
 Train:
+
 ```
 $ python train_mnist.py --help
 
@@ -65,7 +66,9 @@ optional arguments:
 
 ## Visualization
 
-Generative quality can be visualized directly in the "Images" tab in Tensorboard:
+Generative quality can be visualized directly in the "Images" tab in
+Tensorboard:
+
 ```
 tensorboard --logdir experiments/
 ```

@@ -1,10 +1,11 @@
 import dataclasses
+import functools
 from typing import Any, Optional, Tuple
 
 import fifteen
 import flax
 import jax
-import jax_dataclasses
+import jax_dataclasses as jdc
 import numpy as onp
 import optax
 from jax import numpy as jnp
@@ -29,7 +30,7 @@ class TrainConfig:
     optimizer: OptimizerConfig = OptimizerConfig()
 
     ldr_epsilon_sq: float = 0.5
-    """$\epsilon^2$ parameter used for MCR losses."""
+    r"""$\epsilon^2$ parameter used for MCR losses."""
 
     vectorize_over_classes: bool = True
     """Set to False to loop over classes instead of vectorizing. This typically leads to
@@ -37,9 +38,9 @@ class TrainConfig:
     minimax on some older GPUs. Possibly related to memory layout."""
 
 
-@jax_dataclasses.pytree_dataclass
+@jdc.pytree_dataclass
 class Optimizer:
-    tx: optax.GradientTransformation = jax_dataclasses.static_field()
+    tx: optax.GradientTransformation = jdc.static_field()
     state: optax.OptState
 
     @staticmethod
@@ -63,17 +64,17 @@ class Optimizer:
         return Optimizer(tx=tx, state=state)
 
 
-@jax_dataclasses.pytree_dataclass
+@jdc.pytree_dataclass
 class TrainState:
-    config: TrainConfig = jax_dataclasses.static_field()
+    config: TrainConfig = jdc.static_field()
 
     # f and theta in paper.
-    f_model: mnist_networks.MnistEncoder = jax_dataclasses.static_field()
+    f_model: mnist_networks.MnistEncoder = jdc.static_field()
     f_state: flax.core.FrozenDict
     f_optimizer: Optimizer
 
     # g and eta in paper.
-    g_model: mnist_networks.MnistDecoder = jax_dataclasses.static_field()
+    g_model: mnist_networks.MnistDecoder = jdc.static_field()
     g_state: flax.core.FrozenDict
     g_optimizer: Optimizer
 
@@ -113,23 +114,27 @@ class TrainState:
             steps=0,
         )
 
-    @jax.jit
+    @functools.partial(
+        jax.jit,
+        donate_argnums=0,  # By default, old training state will be deleted.
+    )
     def sequential_minimax_step(
-        self,
-        minibatch: mnist_data.MnistStruct,
+        self, minibatch: mnist_data.MnistStruct
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
         """Run a min, then a max step. Backprops twice."""
         train_state = self
         train_state = _min_step(train_state, minibatch)
         train_state, log_data = _max_step(train_state, minibatch)
-        with jax_dataclasses.copy_and_mutate(train_state) as train_state:
+        with jdc.copy_and_mutate(train_state) as train_state:
             train_state.steps = train_state.steps + 1
         return train_state, log_data
 
-    @jax.jit
+    @functools.partial(
+        jax.jit,
+        donate_argnums=0,  # By default, old training state will be deleted.
+    )
     def simultaneous_minimax_step(
-        self,
-        minibatch: mnist_data.MnistStruct,
+        self, minibatch: mnist_data.MnistStruct
     ) -> Tuple["TrainState", fifteen.experiments.TensorboardLogData]:
         """Run min and max steps synchronously. Backprops only once.
 
@@ -162,7 +167,7 @@ class TrainState:
             grads[1], self.g_optimizer.state, self.g_state["params"]
         )
 
-        with jax_dataclasses.copy_and_mutate(self, validate=True) as out:
+        with jdc.copy_and_mutate(self, validate=True) as out:
             out.f_optimizer.state = f_optimizer_state_new
             out.g_optimizer.state = g_optimizer_state_new
             out.f_state = flax.core.FrozenDict(
@@ -171,13 +176,13 @@ class TrainState:
                 params=jax.tree_map(
                     jnp.subtract, self.f_state["params"], f_params_updates
                 ),
-                **f_state_updated_batch_stats
+                **f_state_updated_batch_stats,
             )
             out.g_state = flax.core.FrozenDict(
                 # This map is the same as optax.apply_updates. An addition here means we
                 # get a minimization.
                 params=jax.tree_map(jnp.add, self.g_state["params"], g_params_updates),
-                **g_state_updated_batch_stats
+                **g_state_updated_batch_stats,
             )
             out.steps = self.steps + 1
 
@@ -268,7 +273,7 @@ def _compute_ldr_score(
                 "2_compressive_decode": b,
                 "3_contrastive_contractive": c,
                 "1_minus_2": a - b,
-                "mse": jnp.mean(X_minus_X_hat ** 2),
+                "mse": jnp.mean(X_minus_X_hat**2),
             },
             histograms={
                 "X": X[histogram_sample_size:],
@@ -302,12 +307,12 @@ def _min_step(
     g_params_updates, g_optimizer_state_new = train_state.g_optimizer.tx.update(
         grads, train_state.g_optimizer.state, train_state.g_state["params"]
     )
-    with jax_dataclasses.copy_and_mutate(train_state, validate=True) as out:
+    with jdc.copy_and_mutate(train_state, validate=True) as out:
         out.g_optimizer.state = g_optimizer_state_new
         out.f_state = train_state.f_state.copy(f_state_updated_batch_stats)
         out.g_state = flax.core.FrozenDict(
             params=optax.apply_updates(train_state.g_state["params"], g_params_updates),
-            **g_state_updated_batch_stats
+            **g_state_updated_batch_stats,
         )
 
     return out
@@ -340,11 +345,11 @@ def _max_step(
     f_params_updates, f_optimizer_state_new = train_state.f_optimizer.tx.update(
         grads, train_state.f_optimizer.state, train_state.f_state["params"]
     )
-    with jax_dataclasses.copy_and_mutate(train_state, validate=True) as out:
+    with jdc.copy_and_mutate(train_state, validate=True) as out:
         out.f_optimizer.state = f_optimizer_state_new
         out.f_state = flax.core.FrozenDict(
             params=optax.apply_updates(train_state.f_state["params"], f_params_updates),
-            **f_state_updated_batch_stats
+            **f_state_updated_batch_stats,
         )
         out.g_state = train_state.g_state.copy(g_state_updated_batch_stats)
 

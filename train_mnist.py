@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Optional
+import pathlib
 
 import dcargs
 import fifteen
@@ -27,18 +27,22 @@ class Args:
 
     seed: int = 94709
     restore_existing_checkpoint: bool = True
-    batch_size: int = 2048
+    minibatch_size: int = 2048
     train_config: mnist_training.TrainConfig = mnist_training.TrainConfig()
 
 
 def main(args: Args):
 
-    experiment = fifteen.experiments.Experiment(identifier=args.experiment_identifier)
+    experiment = fifteen.experiments.Experiment(
+        data_dir=pathlib.Path("./experiments/") / args.experiment_identifier
+    )
 
     test_data = mnist_data.load_mnist_dataset("test")
     train_dataset = mnist_data.MnistDataset("train")
     train_dataloader = fifteen.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, num_workers=4
+        train_dataset,
+        minibatch_size=args.minibatch_size,
+        num_workers=4,
     )
     train_state = mnist_training.TrainState.setup(
         config=args.train_config,
@@ -55,13 +59,13 @@ def main(args: Args):
 
     experiment.write_metadata("train_config", args.train_config)
 
-    # Run sequential minimax game.
+    # Run minimax game.
     while train_state.steps < args.train_config.training_steps:
 
         # Shuffle minibatches by epoch count.
         epoch = int(train_state.steps // train_dataloader.minibatch_count())
         for minibatch in tqdm(train_dataloader.minibatches(shuffle_seed=epoch)):
-            # Run minimax step.
+            # Single minimax step.
             if args.simultaneous_minimax:
                 train_state, log_data = train_state.simultaneous_minimax_step(minibatch)
             else:
@@ -78,6 +82,8 @@ def main(args: Args):
             # Checkpoint.
             if train_state.steps % 50 == 0:
                 experiment.save_checkpoint(train_state, step=train_state.steps)
+
+                # TODO: visualization could be optimized.
                 experiment.summary_writer.image(
                     "encode_decode_test_set",
                     mnist_viz.visualize_encode_decode(

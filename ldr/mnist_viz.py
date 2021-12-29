@@ -1,4 +1,5 @@
 import io
+from typing import cast
 
 import jax
 import numpy as onp
@@ -17,8 +18,14 @@ def _encode_then_decode(
     batch_size = X.shape[0]
     assert X.shape == (batch_size, 32, 32, 1)
 
-    Z = train_state.f_model.apply(train_state.f_state, X, train=False)
-    X_hat = train_state.g_model.apply(train_state.g_state, Z, train=False)
+    Z = cast(
+        jnp.ndarray,
+        train_state.f_model.apply(train_state.f_state, X, train=False),
+    )
+    X_hat = cast(
+        jnp.ndarray,
+        train_state.g_model.apply(train_state.g_state, Z, train=False),
+    )
 
     assert X_hat.shape == X.shape
     return X_hat

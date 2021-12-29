@@ -7,7 +7,7 @@ from jax import numpy as jnp
 
 # From the first DCGAN paper.
 conv_kernel_init = nn.initializers.normal(stddev=0.02)
-batchnorm_scale_init = lambda *a, **kw: 1.0 + conv_kernel_init(*a, **kw)  # type: ignore
+batchnorm_scale_init = lambda *a, **kw: 1.0 + conv_kernel_init(*a, **kw)  # noqa
 
 
 class MnistEncoder(nn.Module):

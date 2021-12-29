@@ -3,15 +3,15 @@ from typing import Literal
 
 import datasets
 import jax
-import jax_dataclasses
+import jax_dataclasses as jdc
 import numpy as onp
 import PIL.Image
 from jax import numpy as jnp
 from typing_extensions import Annotated
 
 
-@jax_dataclasses.pytree_dataclass
-class MnistStruct(jax_dataclasses.EnforcedAnnotationsMixin):
+@jdc.pytree_dataclass
+class MnistStruct(jdc.EnforcedAnnotationsMixin):
     image: Annotated[
         jnp.ndarray,
         (32, 32, 1),
@@ -33,17 +33,13 @@ def load_mnist_dataset(split: Literal["train", "test"]) -> "MnistStruct":
     d = datasets.load_dataset("mnist")
     d.set_format("numpy")  # type: ignore
     images = []
+
+    im: PIL.Image
     for im in d[split]["image"]:  # type: ignore
-        images.append(
-            onp.array(
-                PIL.Image.fromarray(im.astype(onp.uint8)).resize(
-                    (32, 32), PIL.Image.BILINEAR
-                )
-            )
-        )
+        images.append(onp.array(im.resize((32, 32), PIL.Image.BILINEAR)))
 
     return MnistStruct(
-        image=2.0 * (onp.array(images, dtype=onp.float32)[:, :, :, None] / 255.0 - 0.5),
+        image=2.0 * (onp.array(images, dtype=onp.float32)[:, :, :, None] / 255.0 - 0.5),  # type: ignore
         label=make_one_hot(d[split]["label"], num_classes=10),  # type: ignore
     )
 
